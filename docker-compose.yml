@@ -1,0 +1,463 @@
+version: "3.7"
+
+x-app-variables: &common-app-variables
+  PUID: 1000
+  GUID: 1000
+  TZ: "US/Pacific"
+
+x-app: &defaults
+  restart: "unless-stopped"
+
+
+services:
+  watchtower:
+    image: "containrrr/watchtower"
+    container_name: "watchtower"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+       proxy:
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      <<: *common-app-variables
+      CF_API_EMAIL: "${CF_API_EMAIL}"
+      CF_DNS_API_TOKEN: "${CF_API_TOKEN}"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/acme.json:/acme.json:rw
+      - ./traefik/config.yml:/config.yml:ro
+      - ./traefik/logs:/var/log/traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.entrypoints=http"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_HTPASSWD}"
+      - "traefik.http.middlewares.traefik-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.traefik.middlewares=traefik-https-redirect"
+      - "traefik.http.routers.traefik-secure.entrypoints=https"
+      - "traefik.http.routers.traefik-secure.rule=Host(`traefik.${MY_DOMAIN}`)"
+      - "traefik.http.routers.traefik-secure.middlewares=traefik-auth"
+      - "traefik.http.routers.traefik-secure.tls=true"
+      - "traefik.http.routers.traefik-secure.tls.certresolver=cloudflare"
+      - "traefik.http.routers.traefik-secure.tls.domains[0].main=${MY_DOMAIN}"
+      - "traefik.http.routers.traefik-secure.tls.domains[0].sans=*.${MY_DOMAIN}"
+      - "traefik.http.routers.traefik-secure.service=api@internal"
+
+
+  uptimekuma:
+    image: "louislam/uptime-kuma:1"
+    container_name: "uptime-kuma"
+    restart: always
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - ./uptimekuma:/app/data
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.uptimekuma.entrypoints=http"
+      - "traefik.http.routers.uptimekuma.rule=Host(`uptimekuma.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.uptimekuma-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.uptimekuma.middlewares=uptimekuma-https-redirect"
+      - "traefik.http.routers.uptimekuma-secure.entrypoints=https"
+      - "traefik.http.routers.uptimekuma-secure.rule=Host(`uptimekuma.${MY_DOMAIN}`)"
+      - "traefik.http.routers.uptimekuma-secure.tls=true"
+      - "traefik.http.routers.uptimekuma-secure.service=uptimekuma"
+      - "traefik.http.services.uptimekuma.loadbalancer.server.port=3001"
+    networks:
+      proxy:
+
+
+  gluetun:
+    <<: *defaults
+    image: "qmcgaw/gluetun"
+    container_name: "gluetun"
+    cap_add:
+      - "NET_ADMIN"
+    devices:
+      - "/dev/net/tun"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+    ports:
+      - 8888:8888/tcp # HTTP proxy
+      - 8388:8388/tcp # Shadowsocks
+      - 8388:8388/udp # Shadowsocks
+    dns:
+      - "192.168.1.23"
+    environment:
+      <<: *common-app-variables
+      HTTPPROXY: "on"
+      SHADOWSOCKS: "on"
+      VPN_SERVICE_PROVIDER: "mullvad"
+      VPN_TYPE: "wireguard"
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY} 
+      WIREGUARD_ADDRESSES: ${WIREGUARD_PRIVATE_KEY}
+      SERVER_CITIES: "Switzerland,Amsterdam"
+    networks:
+      proxy:
+
+
+  qbittorrent:
+    <<: *defaults
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      <<: *common-app-variables
+      WEBUI_PORT: 8090
+    volumes:
+      - "./qbittorrent:/config"
+      - "/mnt/md0/qbittorrent/downloads:/data/torrents"
+      - "/mnt/md0/qbittorrent/downloads:/downloads"
+      - "/mnt/md0/qbittorrent/data/downloads:/data/downloads"
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.qbittorrent.entrypoints=http"
+      - "traefik.http.routers.qbittorrent.rule=Host(`qbittorrent.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.qbittorrent-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.qbittorrent.middlewares=qbittorrent-https-redirect"
+      - "traefik.http.routers.qbittorrent-secure.entrypoints=https"
+      - "traefik.http.routers.qbittorrent-secure.rule=Host(`qbittorrent.${MY_DOMAIN}`)"
+      - "traefik.http.routers.qbittorrent-secure.tls=true"
+      - "traefik.http.routers.qbittorrent-secure.service=qbittorrent"
+      - "traefik.http.services.qbittorrent.loadbalancer.server.port=8090"
+
+
+  prowlarr:
+    <<: *defaults
+    image: "lscr.io/linuxserver/prowlarr:nightly"
+    container_name: "prowlarr"
+    environment:
+      <<: *common-app-variables
+    network_mode: "service:gluetun"
+    depends_on:
+      - "gluetun"
+    volumes:
+      - "./prowlarr/config:/config"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.prowlarr.entrypoints=http"
+      - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.prowlarr-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.prowlarr.middlewares=prowlarr-https-redirect"
+      - "traefik.http.routers.prowlarr-secure.entrypoints=https"
+      - "traefik.http.routers.prowlarr-secure.rule=Host(`prowlarr.${MY_DOMAIN}`)"
+      - "traefik.http.routers.prowlarr-secure.tls=true"
+      - "traefik.http.routers.prowlarr-secure.service=prowlarr"
+      - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
+
+
+  radarr:
+    <<: *defaults
+    image: "linuxserver/radarr"
+    container_name: "radarr"
+    environment:
+      <<: *common-app-variables
+    network_mode: "service:gluetun"
+    depends_on:
+      - "gluetun"
+    volumes:
+      - "./radarr:/config"
+      - "/data/mnemosyne/Movies:/movies"
+      - "/mnt/md0/qbittorrent/downloads:/data/completed"
+      - "/mnt/md0/qbittorrent/data:/data"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.radarr.entrypoints=http"
+      - "traefik.http.routers.radarr.rule=Host(`radarr.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.radarr-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.radarr.middlewares=radarr-https-redirect"
+      - "traefik.http.routers.radarr-secure.entrypoints=https"
+      - "traefik.http.routers.radarr-secure.rule=Host(`radarr.${MY_DOMAIN}`)"
+      - "traefik.http.routers.radarr-secure.tls=true"
+      - "traefik.http.routers.radarr-secure.service=radarr"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+
+
+  sonarr:
+    <<: *defaults
+    image: "linuxserver/sonarr"
+    container_name: "sonarr"
+    environment:
+      <<: *common-app-variables
+    network_mode: "service:gluetun"
+    depends_on:
+      - "gluetun"
+    volumes:
+      - "./sonarr/:/config"
+      - "/data/mnemosyne/TV:/tv"
+      - "/mnt/md0/qbittorrent/downloads:/data/completed"
+      - "/mnt/md0/qbittorrent/data:/data"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.sonarr.entrypoints=http"
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.sonarr-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.sonarr.middlewares=sonarr-https-redirect"
+      - "traefik.http.routers.sonarr-secure.entrypoints=https"
+      - "traefik.http.routers.sonarr-secure.rule=Host(`sonarr.${MY_DOMAIN}`)"
+      - "traefik.http.routers.sonarr-secure.tls=true"
+      - "traefik.http.routers.sonarr-secure.service=sonarr"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+
+
+  bazarr:
+    <<: *defaults
+    image: "lscr.io/linuxserver/bazarr:latest"
+    container_name: "bazarr"
+    environment:
+      <<: *common-app-variables
+    network_mode: "service:gluetun"
+    depends_on:
+      - "gluetun"
+    volumes:
+      - "./bazarr/:/config"
+      - "/data/mnemosyne/TV:/tv"
+      - "/data/mnemosyne/Movies:/movies"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.bazarr.entrypoints=http"
+      - "traefik.http.routers.bazarr.rule=Host(`bazarr.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.bazarr-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.bazarr.middlewares=bazarr-https-redirect"
+      - "traefik.http.routers.bazarr-secure.entrypoints=https"
+      - "traefik.http.routers.bazarr-secure.rule=Host(`bazarr.${MY_DOMAIN}`)"
+      - "traefik.http.routers.bazarr-secure.tls=true"
+      - "traefik.http.routers.bazarr-secure.service=bazarr"
+      - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
+
+
+  slskd:
+    <<: *defaults
+    image: "slskd/slskd"
+    container_name: "slskd"
+    environment:
+      <<: *common-app-variables
+      SLSKD_REMOTE_CONFIGURATION: "true"
+    network_mode: "service:gluetun"
+    depends_on:
+      - "gluetun"
+    volumes:
+      - "./slskd:/app"
+      - "/data/mnemosyne/Music/SoulShare:/soulshare"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.soulseek.entrypoints=http"
+      - "traefik.http.routers.soulseek.rule=Host(`soulseek.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.soulseek-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.soulseek.middlewares=soulseek-https-redirect"
+      - "traefik.http.routers.soulseek-secure.entrypoints=https"
+      - "traefik.http.routers.soulseek-secure.rule=Host(`soulseek.${MY_DOMAIN}`)"
+      - "traefik.http.routers.soulseek-secure.tls=true"
+      - "traefik.http.routers.soulseek-secure.service=soulseek"
+      - "traefik.http.services.soulseek.loadbalancer.server.port=5030"
+
+
+  vaultwarden:
+    # Routes through cloudflare, so no need for traefik labels
+    <<: *defaults
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    ports:
+     - 9445:80
+    environment:
+     <<: *common-app-variables
+     ADMIN_TOKEN: ${ADMIN_TOKEN}
+     WEBSOCKET_ENABLED: ${WEBSOCKET_ENABLED}
+     SIGNUPS_ALLOWED: ${SIGNUPS_ALLOWED}
+     USE_SENDMAIL: ${USE_SENDMAIL}
+     DOMAIN: ${DOMAIN}
+    volumes:
+     - /vaultwarden:/data:rw
+
+
+  audiobookshelf:
+    # Routes through cloudflare, so no need for traefik labels
+    <<: *defaults
+    image: "ghcr.io/advplyr/audiobookshelf:latest"
+    container_name: "audiobookshelf"
+    ports:
+      - "13378:80"
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - "/data/mnemosyne/Audiobooks:/audiobooks:ro"
+      - "/data/mnemosyne/Podcasts:/podcasts:ro"
+      - "/data/mnemosyne/Ebooks:/ebooks:ro"
+      - "./audiobookshelf/config:/config"
+      - "./audiobookshelf/metadata:/metadata"
+    networks:
+      - "audio_server_neo"
+
+
+  portainer:
+    <<: *defaults
+    image: "portainer/portainer-ce:latest"
+    container_name: "portainer"
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - "./portainer:/data"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.entrypoints=http"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.portainer-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.portainer.middlewares=portainer-https-redirect"
+      - "traefik.http.routers.portainer-secure.entrypoints=https"
+      - "traefik.http.routers.portainer-secure.rule=Host(`portainer.${MY_DOMAIN}`)"
+      - "traefik.http.routers.portainer-secure.tls=true"
+      - "traefik.http.routers.portainer-secure.service=portainer"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+      - "traefik.docker.network=proxy"
+    networks:
+      proxy:
+
+
+  freshrss:
+    <<: *defaults
+    image: "lscr.io/linuxserver/freshrss:latest"
+    container_name: "freshrss"
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - "./freshrss/config:/config"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.freshrss.entrypoints=http"
+      - "traefik.http.routers.freshrss.rule=Host(`freshrss.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.freshrss-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.freshrss.middlewares=freshrss-https-redirect"
+      - "traefik.http.routers.freshrss-secure.entrypoints=https"
+      - "traefik.http.routers.freshrss-secure.rule=Host(`freshrss.${MY_DOMAIN}`)"
+      - "traefik.http.routers.freshrss-secure.tls=true"
+      - "traefik.http.routers.freshrss-secure.service=freshrss"
+      - "traefik.http.services.freshrss.loadbalancer.server.port=80"
+      - "traefik.docker.network=proxy"
+    networks:
+      proxy:
+
+
+  mealie:
+    <<: *defaults
+    image: ghcr.io/mealie-recipes/mealie:v1.6.0
+    container_name: mealie
+    ports:
+      - 9000:9000
+    deploy:
+      resources:
+        limits:
+          memory: 1000M
+    volumes:
+      - ./mealie:/app/data/
+    environment:
+      <<: *common-app-variables
+      ALLOW_SIGNUP: false
+      MAX_WORKERS: 1
+      WEB_CONCURRENCY: 1
+      BASE_URL: https://mealie.${MY_DOMAIN}
+
+
+  tautulli:
+    <<: *defaults
+    image: "lscr.io/linuxserver/tautulli:latest"
+    container_name: "tautulli"
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - "./tautulli/config:/config"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tautulli.entrypoints=http"
+      - "traefik.http.routers.tautulli.rule=Host(`tautulli.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.tautulli-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.tautulli.middlewares=tautulli-https-redirect"
+      - "traefik.http.routers.tautulli-secure.entrypoints=https"
+      - "traefik.http.routers.tautulli-secure.rule=Host(`tautulli.${MY_DOMAIN}`)"
+      - "traefik.http.routers.tautulli-secure.tls=true"
+      - "traefik.http.routers.tautulli-secure.service=tautulli"
+      - "traefik.http.services.tautulli.loadbalancer.server.port=8181"
+      - "traefik.docker.network=proxy"
+    networks:
+      proxy:
+
+
+  syncthing:
+    <<: *defaults
+    image: "lscr.io/linuxserver/syncthing:latest"
+    container_name: "syncthing"
+    ports:
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    environment:
+      <<: *common-app-variables
+    volumes:
+      - "./syncthing/config:/config"
+      - "/data/mnemosyne/Sync:/sync"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.syncthing.entrypoints=http"
+      - "traefik.http.routers.syncthing.rule=Host(`syncthing.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.syncthing-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+      - "traefik.http.routers.syncthing.middlewares=syncthing-https-redirect"
+      - "traefik.http.routers.syncthing-secure.entrypoints=https"
+      - "traefik.http.routers.syncthing-secure.rule=Host(`syncthing.${MY_DOMAIN}`)"
+      - "traefik.http.routers.syncthing-secure.tls=true"
+      - "traefik.http.routers.syncthing-secure.service=syncthing"
+      - "traefik.http.services.syncthing.loadbalancer.server.port=8384"
+      - "traefik.docker.network=proxy"
+    networks:
+      proxy:
+
+#   kiwix-wikipedia:
+#     <<: *defaults
+#     image: "ghcr.io/kiwix/kiwix-serve"
+#     container_name: "kiwix-wikipedia"
+#     ports:
+#       - "8882:8080"
+#     environment:
+#       <<: *common-app-variables
+#     command: "wikipedia_en_all_maxi_2024-01.zim"
+#     volumes:
+#       - "/mnt/md0/wikipedia:/data"
+
+networks:
+  audio_server_neo:
+    driver: bridge
+  proxy:
+    driver: bridge
