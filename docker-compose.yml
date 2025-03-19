@@ -1,5 +1,3 @@
-version: "3.7"
-
 x-app-variables: &common-app-variables
   PUID: 1000
   GUID: 1000
@@ -16,29 +14,40 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
 
+  deunhealth:
+    image: "qmcgaw/deunhealth"
+    container_name: "deunhealth"
+    network_mode: "none"
+    environment:
+      <<: *common-app-variables
+      LOG_LEVEL: "info"
+      HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
+    restart: "always"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
 
   traefik:
-    image: traefik:latest
-    container_name: traefik
-    restart: unless-stopped
+    image: "traefik:latest"
+    container_name: "traefik"
+    restart: "unless-stopped"
     security_opt:
-      - no-new-privileges:true
+      - "no-new-privileges:true"
     networks:
        proxy:
     ports:
-      - 80:80
-      - 443:443
+      - "80:80"
+      - "443:443"
     environment:
       <<: *common-app-variables
       CF_API_EMAIL: "${CF_API_EMAIL}"
       CF_DNS_API_TOKEN: "${CF_API_TOKEN}"
     volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/traefik.yml:ro
-      - ./traefik/acme.json:/acme.json:rw
-      - ./traefik/config.yml:/config.yml:ro
-      - ./traefik/logs:/var/log/traefik
+      - "/etc/localtime:/etc/localtime:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./traefik/traefik.yml:/traefik.yml:ro"
+      - "./traefik/acme.json:/acme.json:rw"
+      - "./traefik/config.yml:/config.yml:ro"
+      - "./traefik/logs:/var/log/traefik"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.entrypoints=http"
@@ -57,27 +66,72 @@ services:
       - "traefik.http.routers.traefik-secure.service=api@internal"
 
 
+  overseerr:
+    # Routes through cloudflare, so no need for traefik labels
+    <<: *defaults
+    image: "sctx/overseerr:latest"
+    container_name: "overseerr"
+    ports:
+      - "5055:5055"
+    environment:
+      <<: *common-app-variables
+      LOG_LEVEL: "debug"
+      PORT: 5055 #optional
+    volumes:
+      - "/overseer/config:/app/config"
+    networks:
+      proxy:
+
+
+  suggestarr:
+    <<: *defaults
+    image: "ciuse99/suggestarr:latest"
+    container_name: "suggestarr"
+    environment:
+      <<: *common-app-variables
+    ports:
+      - "5000:5000"
+    volumes:
+      - "./suggestarr/config_files:/app/config/config_files"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.suggestarr.entrypoints=http"
+      - "traefik.http.routers.suggestarr.rule=host(`suggestarr.${MY_DOMAIN}`)"
+      - "traefik.http.middlewares.suggestarr-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.suggestarr.middlewares=suggestarr-https-redirect"
+      - "traefik.http.routers.suggestarr-secure.entrypoints=https"
+      - "traefik.http.routers.suggestarr-secure.rule=host(`suggestarr.${MY_DOMAIN}`)"
+      - "traefik.http.routers.suggestarr-secure.tls=true"
+      - "traefik.http.routers.suggestarr-secure.service=suggestarr"
+      - "traefik.http.services.suggestarr.loadbalancer.server.port=5000"
+    networks:
+      proxy:
+
+
   uptimekuma:
     image: "louislam/uptime-kuma:1"
     container_name: "uptime-kuma"
-    restart: always
+    restart: "always"
     environment:
       <<: *common-app-variables
     volumes:
-      - ./uptimekuma:/app/data
+      - "./uptimekuma:/app/data"
       - "/var/run/docker.sock:/var/run/docker.sock"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.uptimekuma.entrypoints=http"
-      - "traefik.http.routers.uptimekuma.rule=Host(`uptimekuma.${MY_DOMAIN}`)"
+      - "traefik.http.routers.uptimekuma.rule=host(`uptimekuma.${MY_DOMAIN}`)"
       - "traefik.http.middlewares.uptimekuma-https-redirect.redirectscheme.scheme=https"
       - "traefik.http.routers.uptimekuma.middlewares=uptimekuma-https-redirect"
       - "traefik.http.routers.uptimekuma-secure.entrypoints=https"
-      - "traefik.http.routers.uptimekuma-secure.rule=Host(`uptimekuma.${MY_DOMAIN}`)"
+      - "traefik.http.routers.uptimekuma-secure.rule=host(`uptimekuma.${MY_DOMAIN}`)"
       - "traefik.http.routers.uptimekuma-secure.tls=true"
       - "traefik.http.routers.uptimekuma-secure.service=uptimekuma"
       - "traefik.http.services.uptimekuma.loadbalancer.server.port=3001"
+    dns:
+      - "192.168.1.23"
     networks:
       proxy:
 
@@ -93,9 +147,9 @@ services:
     sysctls:
       net.ipv6.conf.all.disable_ipv6: 0
     ports:
-      - 8888:8888/tcp # HTTP proxy
-      - 8388:8388/tcp # Shadowsocks
-      - 8388:8388/udp # Shadowsocks
+      - "8888:8888/tcp" # HTTP proxy
+      - "8388:8388/tcp" # Shadowsocks
+      - "8388:8388/udp" # Shadowsocks
     dns:
       - "192.168.1.23"
     environment:
@@ -104,17 +158,19 @@ services:
       SHADOWSOCKS: "on"
       VPN_SERVICE_PROVIDER: "mullvad"
       VPN_TYPE: "wireguard"
-      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY} 
-      WIREGUARD_ADDRESSES: ${WIREGUARD_PRIVATE_KEY}
+      WIREGUARD_PRIVATE_KEY: "${WIREGUARD_PRIVATE_KEY}" 
+      WIREGUARD_ADDRESSES: "${WIREGUARD_ADDRESSES}"
       SERVER_CITIES: "Switzerland,Amsterdam"
     networks:
       proxy:
+    labels:
+      - "deunhealth.restart.on.unhealthy=true"
 
 
   qbittorrent:
     <<: *defaults
-    image: linuxserver/qbittorrent:latest
-    container_name: qbittorrent
+    image: "linuxserver/qbittorrent:latest"
+    container_name: "qbittorrent"
     environment:
       <<: *common-app-variables
       WEBUI_PORT: 8090
@@ -123,11 +179,12 @@ services:
       - "/mnt/md0/qbittorrent/downloads:/data/torrents"
       - "/mnt/md0/qbittorrent/downloads:/downloads"
       - "/mnt/md0/qbittorrent/data/downloads:/data/downloads"
-    network_mode: service:gluetun
+    network_mode: "service:gluetun"
     depends_on:
       gluetun:
-        condition: service_healthy
+        condition: "service_healthy"
     labels:
+      - "deunhealth.restart.on.unhealthy=true"
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.qbittorrent.entrypoints=http"
@@ -254,50 +311,50 @@ services:
       - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
 
-  slskd:
-    <<: *defaults
-    image: "slskd/slskd"
-    container_name: "slskd"
-    environment:
-      <<: *common-app-variables
-      SLSKD_REMOTE_CONFIGURATION: "true"
-    network_mode: "service:gluetun"
-    depends_on:
-      - "gluetun"
-    volumes:
-      - "./slskd:/app"
-      - "/data/mnemosyne/Music/SoulShare:/soulshare"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
-      - "traefik.http.routers.soulseek.entrypoints=http"
-      - "traefik.http.routers.soulseek.rule=Host(`soulseek.${MY_DOMAIN}`)"
-      - "traefik.http.middlewares.soulseek-https-redirect.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
-      - "traefik.http.routers.soulseek.middlewares=soulseek-https-redirect"
-      - "traefik.http.routers.soulseek-secure.entrypoints=https"
-      - "traefik.http.routers.soulseek-secure.rule=Host(`soulseek.${MY_DOMAIN}`)"
-      - "traefik.http.routers.soulseek-secure.tls=true"
-      - "traefik.http.routers.soulseek-secure.service=soulseek"
-      - "traefik.http.services.soulseek.loadbalancer.server.port=5030"
+#  slskd:
+#    <<: *defaults
+#    image: "slskd/slskd"
+#    container_name: "slskd"
+#    environment:
+#      <<: *common-app-variables
+#      SLSKD_REMOTE_CONFIGURATION: "true"
+#    network_mode: "service:gluetun"
+#    depends_on:
+#      - "gluetun"
+#    volumes:
+#      - "./slskd:/app"
+#      - "/data/mnemosyne/Music/SoulShare:/soulshare"
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.docker.network=proxy"
+#      - "traefik.http.routers.soulseek.entrypoints=http"
+#      - "traefik.http.routers.soulseek.rule=Host(`soulseek.${MY_DOMAIN}`)"
+#      - "traefik.http.middlewares.soulseek-https-redirect.redirectscheme.scheme=https"
+#      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
+#      - "traefik.http.routers.soulseek.middlewares=soulseek-https-redirect"
+#      - "traefik.http.routers.soulseek-secure.entrypoints=https"
+#      - "traefik.http.routers.soulseek-secure.rule=Host(`soulseek.${MY_DOMAIN}`)"
+#      - "traefik.http.routers.soulseek-secure.tls=true"
+#      - "traefik.http.routers.soulseek-secure.service=soulseek"
+#      - "traefik.http.services.soulseek.loadbalancer.server.port=5030"
 
 
   vaultwarden:
     # Routes through cloudflare, so no need for traefik labels
     <<: *defaults
-    image: vaultwarden/server:latest
-    container_name: vaultwarden
+    image: "vaultwarden/server:latest"
+    container_name: "vaultwarden"
     ports:
-     - 9445:80
+     - "9445:80"
     environment:
      <<: *common-app-variables
-     ADMIN_TOKEN: ${ADMIN_TOKEN}
-     WEBSOCKET_ENABLED: ${WEBSOCKET_ENABLED}
-     SIGNUPS_ALLOWED: ${SIGNUPS_ALLOWED}
-     USE_SENDMAIL: ${USE_SENDMAIL}
-     DOMAIN: ${DOMAIN}
+     ADMIN_TOKEN: "${ADMIN_TOKEN}"
+     WEBSOCKET_ENABLED: "${WEBSOCKET_ENABLED}"
+     SIGNUPS_ALLOWED: "${SIGNUPS_ALLOWED}"
+     USE_SENDMAIL: "${USE_SENDMAIL}"
+     DOMAIN: "${DOMAIN}"
     volumes:
-     - /vaultwarden:/data:rw
+     - "/vaultwarden:/data:rw"
 
 
   audiobookshelf:
@@ -317,6 +374,36 @@ services:
       - "./audiobookshelf/metadata:/metadata"
     networks:
       - "audio_server_neo"
+
+
+#  jellyfin:
+#    <<: *defaults
+#    image: "jellyfin/jellyfin"
+#    container_name: "jellyfin"
+#    ports:
+#      - "8096:8096"
+#    environment:
+#      <<: *common-app-variables
+#      JELLYFIN_PublishedServerUrl: "https://jellyfin.nolick.com"
+#    volumes:
+#      - "./jellyfin/config:/config"
+#      - "./jellyfin/cache:/cache"
+#      - type: "bind"
+#        source: "/data/mnemosyne"
+#        target: "/media"
+#    extra_hosts:
+#      - 'host.docker.internal:host-gateway'
+#    devices:
+#      - "/dev/dri/card1:/dev/dri/card1"
+#      - "/dev/dri/renderD128:/dev/dri/renderD128"
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.local`)"
+#      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
+#      - "traefik.http.routers.myapp.entrypoints=web"
+#      - "traefik.docker.network=proxy"
+#    networks:
+#      proxy:
 
 
   portainer:
@@ -372,22 +459,22 @@ services:
 
   mealie:
     <<: *defaults
-    image: ghcr.io/mealie-recipes/mealie:v1.6.0
-    container_name: mealie
+    image: "ghcr.io/mealie-recipes/mealie:v1.6.0"
+    container_name: "mealie"
     ports:
-      - 9000:9000
+      - "9000:9000"
     deploy:
       resources:
         limits:
-          memory: 1000M
+          memory: "1000M"
     volumes:
-      - ./mealie:/app/data/
+      - "./mealie:/app/data/"
     environment:
       <<: *common-app-variables
-      ALLOW_SIGNUP: false
+      ALLOW_SIGNUP: "false"
       MAX_WORKERS: 1
       WEB_CONCURRENCY: 1
-      BASE_URL: https://mealie.${MY_DOMAIN}
+      BASE_URL: "https://mealie.${MY_DOMAIN}"
 
 
   tautulli:
@@ -415,46 +502,33 @@ services:
       proxy:
 
 
-  syncthing:
-    <<: *defaults
-    image: "lscr.io/linuxserver/syncthing:latest"
-    container_name: "syncthing"
-    ports:
-      - "22000:22000/tcp"
-      - "22000:22000/udp"
-      - "21027:21027/udp"
-    environment:
-      <<: *common-app-variables
-    volumes:
-      - "./syncthing/config:/config"
-      - "/data/mnemosyne/Sync:/sync"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.syncthing.entrypoints=http"
-      - "traefik.http.routers.syncthing.rule=Host(`syncthing.${MY_DOMAIN}`)"
-      - "traefik.http.middlewares.syncthing-https-redirect.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.middleware-ipwhitelist.ipwhitelist.sourcerange='127.0.0.1/32,192.168.0.0/16'"
-      - "traefik.http.routers.syncthing.middlewares=syncthing-https-redirect"
-      - "traefik.http.routers.syncthing-secure.entrypoints=https"
-      - "traefik.http.routers.syncthing-secure.rule=Host(`syncthing.${MY_DOMAIN}`)"
-      - "traefik.http.routers.syncthing-secure.tls=true"
-      - "traefik.http.routers.syncthing-secure.service=syncthing"
-      - "traefik.http.services.syncthing.loadbalancer.server.port=8384"
-      - "traefik.docker.network=proxy"
-    networks:
-      proxy:
+#  kometa:
+#    <<: *defaults
+#    image: lscr.io/linuxserver/kometa:latest
+#    container_name: kometa
+#    environment:
+#      <<: *common-app-variables
+#      KOMETA_CONFIG: /config/config.yml #optional
+#      KOMETA_TIME: 03:00 #optional
+#      KOMETA_RUN: True #optional
+#      KOMETA_TEST: False #optional
+#      KOMETA_NO_MISSING: False #optional
+#    volumes:
+#      - ./kometa/config:/config
 
-#   kiwix-wikipedia:
-#     <<: *defaults
-#     image: "ghcr.io/kiwix/kiwix-serve"
-#     container_name: "kiwix-wikipedia"
-#     ports:
-#       - "8882:8080"
-#     environment:
-#       <<: *common-app-variables
-#     command: "wikipedia_en_all_maxi_2024-01.zim"
-#     volumes:
-#       - "/mnt/md0/wikipedia:/data"
+
+  # kiwix-wikipedia:
+  #   <<: *defaults
+  #   image: "ghcr.io/kiwix/kiwix-serve"
+  #   container_name: "kiwix-wikipedia"
+  #   ports:
+  #     - "8882:8080"
+  #   environment:
+  #     <<: *common-app-variables
+  #   command: "wikipedia_en_all_maxi_2024-01.zim"
+  #   volumes:
+  #     - "/mnt/md0/wikipedia:/data"
+
 
 networks:
   audio_server_neo:
