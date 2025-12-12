@@ -38,6 +38,28 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
 
+  # Pi-hole
+  pihole:
+    container_name: "pihole"
+    image: "pihole/pihole:latest"
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+    environment:
+      <<: *common-app-variables
+      FTLCONF_webserver_api_password: "Bailey14Cat"
+      FTLCONF_dns_listeningMode: "all"
+    volumes:
+      - "./pihole:/etc/pihole"
+      # Uncomment the below if you have custom dnsmasq config files that you want to persist. Not needed for most starting fresh with Pi-hole v6. If you're upgrading from v5 you and have used this directory before, you should keep it enabled for the first v6 container start to allow for a complete migration. It can be removed afterwards. Needs environment variable FTLCONF_misc_etc_dnsmasq_d: 'true'
+      #- './etc-dnsmasq.d:/etc/dnsmasq.d'
+    cap_add:
+      # Optional, if Pi-hole should get some more processing time
+      - SYS_NICE
+    restart: unless-stopped
+
   # Traefik reverse proxy
   traefik:
     image: "traefik:latest"
@@ -78,6 +100,7 @@ services:
       traefik.http.routers.traefik-secure.tls.domains[0].sans: "*.${MY_DOMAIN}"
       traefik.http.routers.traefik-secure.service: "api@internal"
 
+
   # Gluetun VPN to route all traffic through Mullvad
   gluetun:
     <<: *defaults
@@ -90,7 +113,7 @@ services:
     sysctls:
       net.ipv6.conf.all.disable_ipv6: 1
     dns:
-      - "192.168.1.23"
+      - "1.1.1.1"
     environment:
       <<: *common-app-variables
       VPN_SERVICE_PROVIDER: "mullvad"
@@ -100,11 +123,10 @@ services:
       SERVER_CITIES: "Switzerland,Amsterdam"
     networks:
       proxy:
-        # labels:
-        #  - "deunhealth.restart.on.unhealthy=true"
+    # labels:
+    #  - "deunhealth.restart.on.unhealthy=true"
 
 
-        # Keep things monitored and healthy
   uptimekuma:
     image: "louislam/uptime-kuma:1"
     container_name: "uptime-kuma"
@@ -126,14 +148,14 @@ services:
       traefik.http.routers.uptimekuma.rule: "host(`uptimekuma.${MY_DOMAIN}`)"
       traefik.http.services.uptimekuma.loadbalancer.server.port: 3001
     dns:
-      - "192.168.1.23"
+      - "192.168.1.1"
     networks:
       proxy:
 
-        ######################################################
-        #  ARR                                               #
-        ######################################################
 
+  ######################################################
+  #  ARR                                               #
+  ######################################################
 
   overseerr:
     # Routes through cloudflare, so no need for traefik labels
@@ -146,11 +168,12 @@ services:
       <<: *common-app-variables
       LOG_LEVEL: "debug"
       PORT: 5055 #optional
+    dns:
+      - "192.168.1.1"
     volumes:
       - "/overseer/config:/app/config"
     networks:
       proxy:
-
 
   suggestarr:
     <<: *defaults
@@ -175,7 +198,6 @@ services:
       traefik.http.services.suggestarr.loadbalancer.server.port: 5000
     networks:
       proxy:
-
 
   qbittorrent:
     <<: *defaults
@@ -331,6 +353,8 @@ services:
       traefik.http.routers.soulseek.rule: "host(`soulseek.${MY_DOMAIN}`)"
       traefik.http.services.soulseek.loadbalancer.server.port: 5030
 
+
+
   ######################################################
   #  APPLICATIONS                                      #
   ######################################################
@@ -353,6 +377,7 @@ services:
     volumes:
       - "/vaultwarden:/data:rw"
 
+
   audiobookshelf:
     # Routes through cloudflare, so no need for traefik labels
     <<: *defaults
@@ -370,32 +395,6 @@ services:
       - "./audiobookshelf/metadata:/metadata"
     networks:
       - "audio_server_neo"
-
-  gonic:
-    <<: *defaults
-    image: "sentriz/gonic:latest"
-    environment:
-      <<: *common-app-variables
-    volumes:
-      - "./gonic/data:/data"
-      - "/data/mnemosyne/Music:/music"
-      - "/data/mnemosyne/Music/Playlists:/playlists"
-      - "./gonic/cache:/cache"
-    group_add:
-      - audio
-    labels:
-      <<: *traefik-common
-      traefik.http.middlewares.gonic-https-redirect.redirectscheme.scheme: "https"
-      traefik.http.routers.gonic-secure.entrypoints: "https"
-      traefik.http.routers.gonic-secure.rule: "host(`gonic.${MY_DOMAIN}`)"
-      traefik.http.routers.gonic-secure.service: "gonic"
-      traefik.http.routers.gonic-secure.tls: "true"
-      traefik.http.routers.gonic.entrypoints: "http"
-      traefik.http.routers.gonic.middlewares: "gonic-https-redirect"
-      traefik.http.routers.gonic.rule: "host(`gonic.${MY_DOMAIN}`)"
-      traefik.http.services.gonic.loadbalancer.server.port: 80
-    networks:
-      proxy:
 
 
   freshrss:
@@ -440,6 +439,7 @@ services:
       WEB_CONCURRENCY: 1
       BASE_URL: "https://mealie.${MY_DOMAIN}"
 
+
   tautulli:
     <<: *defaults
     image: "lscr.io/linuxserver/tautulli:latest"
@@ -466,7 +466,7 @@ services:
   kometa:
     image: lscr.io/linuxserver/kometa:latest
     container_name: kometa
-    restart: "never"
+    restart: "no"
     environment:
       <<: *common-app-variables
       KOMETA_CONFIG: /config/config.yml #optional
@@ -477,14 +477,15 @@ services:
     volumes:
       - ./kometa/config:/config
 
-  kiwix-wikipedia:
-    image: "ghcr.io/kiwix/kiwix-serve"
-    container_name: "kiwix-wikipedia"
-    restart: "never"
-    ports:
-      - "8882:8080"
-    environment:
-      <<: *common-app-variables
-    command: "wikipedia_en_all_maxi_2024-01.zim"
-    volumes:
-      - "/mnt/md0/wikipedia:/data"
+
+  # kiwix-wikipedia:
+  #   image: "ghcr.io/kiwix/kiwix-serve"
+  #   container_name: "kiwix-wikipedia"
+  #   restart: "no"
+  #   ports:
+  #     - "8882:8080"
+  #   environment:
+  #     <<: *common-app-variables
+  #   command: "wikipedia_en_all_maxi_2024-01.zim"
+  #   volumes:
+  #     - "/mnt/md0/wikipedia:/data"
